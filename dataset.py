@@ -29,8 +29,8 @@ class TextDataset(Dataset):
                 self.int_to_cls[i] = line
 
     def __getitem__(self, idx):
-        # image = Image.open(self.images[idx]).convert('RGB')
-        image = Image.open(self.images[idx]).convert('L')
+        image = Image.open(self.images[idx]).convert('RGB')
+        # image = Image.open(self.images[idx]).convert('L')
         label = self.labels[idx]
 
         image = self.transform(image)

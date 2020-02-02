@@ -9,7 +9,6 @@ from dataset import TextDataset
 from torch.utils.data import DataLoader
 from torch.optim import lr_scheduler
 
-
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -23,10 +22,9 @@ from ignite.engine import Events, create_supervised_trainer, create_supervised_e
 from ignite.metrics import Accuracy, Loss
 from ignite.contrib.metrics import AveragePrecision
 from ignite.handlers import Checkpoint, DiskSaver
-from resnet import ResNetASPP
 
 from torchvision import models
-from aspp import ASPP
+
 from model import Model
 
 
@@ -40,6 +38,7 @@ def create_plot_window(vis, xlabel, ylabel, title, legend):
     return vis.line(X=np.array([[1] * len(legend)]),
                     Y=np.array([[np.nan] * len(legend)]),
                     opts=dict(xlabel=xlabel, ylabel=ylabel, title=title, legend=legend))
+
 
 def compute_class_weights(dataset, c=1.02, num_classes=16):
     """
@@ -83,34 +82,15 @@ def main(args):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.workers, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.workers, shuffle=False)
 
-    # model = models.resnet18(pretrained=True)
-    model = ResNetASPP(pretrained=True)
-    # for param in model.parameters():
-    #     param.requires_grad = False # freeze weights
-    # model.fc = nn.Sequential(
-    #     ASPP(512, 256, [6, 12, 18]),
-    #     nn.Linear(256, 16)
-    # )
+    model = models.resnet18(pretrained=False)
+    model.fc = nn.Linear(512, 16)
 
-    # model = Model(16)
+    model.load_state_dict(torch.load(args.resume_from)['model'])
 
     device = 'cpu'
     if args.cuda:
         device = 'cuda'
     print(device)
-    
-    # lr = 3e-3 / 10
-    lr = 1e-4
-    # criterion = nn.NLLLoss()
-    class_weights = compute_class_weights(train_dataset)
-    criterion = nn.CrossEntropyLoss(class_weights.to(device))
-    # optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=1e-4, momentum=0.9)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr/10, weight_decay=1e-4, betas=(0.9, 0.999))
-    scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=lr, div_factor=10, steps_per_epoch=len(train_loader), epochs=args.epochs)
-    # scheduler = lr_scheduler.StepLR(optimizer, 5, 0.8)
-    poly_lr = lambda epoch: pow((1 - ((epoch - 1) / args.epochs)), 0.9)
-    # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=poly_lr)
-    trainer = create_supervised_trainer(model, optimizer, criterion, device=device)
     metrics = {
         'accuracy': Accuracy(),
         'loss': Loss(criterion)
@@ -119,20 +99,19 @@ def main(args):
 
     @trainer.on(Events.ITERATION_COMPLETED)
     def lr_step(engine):
-        scheduler.step()
+        if model.training:
+            scheduler.step()
 
     global pbar, desc
-    pbar,desc = None, None
-
+    pbar, desc = None, None
 
     @trainer.on(Events.EPOCH_STARTED)
     def create_train_pbar(engine):
         global desc, pbar
         if pbar is not None:
             pbar.close()
-        desc = 'Train iteration - loss: {:.4f} - lr: {:.6f}'
+        desc = 'Train iteration - loss: {:.4f} - lr: {:.4f}'
         pbar = tqdm(initial=0, leave=False, total=len(train_loader), desc=desc.format(0, lr))
-
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def create_val_pbar(engine):
@@ -191,7 +170,7 @@ def main(args):
         avg_nll = metrics['loss']
         tqdm.write(
             "Validation Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}"
-            .format(engine.state.epoch, avg_accuracy, avg_nll))
+                .format(engine.state.epoch, avg_accuracy, avg_nll))
         # pbar.n = pbar.last_print_n = 0
 
         # writer.add_scalars("avg losses", {"train": statistics.mean(train_losses),
@@ -224,18 +203,12 @@ def main(args):
         print(traceback.format_exc())
 
 
-
-
-if __name__=='__main__':
+if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--data_path', type=str, default='./data', help="Dataset loaction")
-    parser.add_argument('--batch_size', type=int, default=64, help="Training and validation batch size")
-    parser.add_argument('--epochs', type=int, default=30, help="Number of epochs")
+    parser.add_argument('--batch_size', type=int, default=16, help="Training and validation batch size")
     parser.add_argument('--workers', type=int, default=0, help="Number of workers for loading data")
-    parser.add_argument('--snapshot_dir', type=str, default='./snapshots')
-    parser.add_argument('--resume_from', type=str, default=None) #'./snapshots/checkpoint_948.pth')
-    parser.add_argument('--train_size', type=int, default=1000)
-    parser.add_argument('--val_size', type=int, default=1000)
+    parser.add_argument('--model_path', type=str, default='./snapshots')
     parser.add_argument('--width', type=int, default=256)
     parser.add_argument('--height', type=int, default=256)
     parser.add_argument('--cuda', action="store_true")

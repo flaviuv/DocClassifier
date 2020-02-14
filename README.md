@@ -25,7 +25,7 @@ Adjusted the learning rate every epoch using a polynomial learning rate schedule
 | ResNet18      | 71.12 | TODO | 32
 | Resnet34      | 71.50 | TODO | 32
 | ResNet50      | 70.50 | TODO | 16
-| ResNet50-ASPP*| 69.00 | TODO | 32
+| ResNet18-ASPP*| 69.00 | TODO | 32
 
 *ResNet50-ASPP had a 5000 image train set and a 5000 image validation set.
 ResNet50 does not show signs of overfitting.

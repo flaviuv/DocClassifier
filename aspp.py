@@ -12,17 +12,15 @@ class ASPP(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU()))
 
-        rate1, rate2, rate3 = tuple(atrous_rates)
-        modules.append(ASPPConv(in_channels, out_channels, rate1))
-        modules.append(ASPPConv(in_channels, out_channels, rate2))
-        modules.append(ASPPConv(in_channels, out_channels, rate3))
+        for rate in atrous_rates:
+            modules.append(ASPPConv(in_channels, out_channels, rate))
         modules.append(ASPPPooling(in_channels, out_channels))
 
         self.convs = nn.ModuleList(modules)
         self.dropout = nn.Dropout(drop_prob) if drop_prob > 0 else nn.Identity(out_channels)
 
         self.project = nn.Sequential(
-            nn.Conv2d(5 * out_channels, out_channels, 1, bias=False),
+            nn.Conv2d(len(modules) * out_channels, out_channels, 1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(),
             self.dropout)

@@ -39,18 +39,19 @@ class ResNetASPP(nn.Module):
         self.layer3 = resnet.layer3
         self.layer4 = resnet.layer4
 
-        self.aspp = ASPP(256, 256, [2, 4, 8], drop_prob=0)
+        self.aspp = ASPP(256, 512, [4, 8, 12], drop_prob=0)
 
         self.avgpool = resnet.avgpool
 
         self.dropout = nn.Dropout(0.5)
-        self.fc = nn.Linear(256, num_classes)
+        self.fc = nn.Linear(512, num_classes)
 
-        if pretrained:
-            self.layer4.apply(weight_init)
-            self.fc.apply(weight_init)
-        else:
-            self.apply(weight_init)
+        # if pretrained:
+        #     self.aspp.apply(weight_init)
+        #     # self.layer4.apply(weight_init)
+        #     self.fc.apply(weight_init)
+        # else:
+        #     self.apply(weight_init)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -61,10 +62,10 @@ class ResNetASPP(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
+        # x = self.layer4(x)
 
         x = self.aspp(x)
 
-        # x = self.layer4(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         # x = self.dropout(x)

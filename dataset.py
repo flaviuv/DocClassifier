@@ -2,7 +2,7 @@ from PIL import Image
 
 import torch
 from torch.utils.data import Dataset
-from torchvision.transforms import ToTensor
+from torchvision.transforms import *
 from pathlib import Path
 
 class TextDataset(Dataset):
@@ -34,10 +34,8 @@ class TextDataset(Dataset):
         label = self.labels[idx]
 
         image = self.transform(image)
-        image[image > 0.5] = 1
-        image[image <= 0.5] = 0
 
-        return image, label  
+        return image, label
     
     def __len__(self):
         return len(self.images)

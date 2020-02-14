@@ -1,5 +1,3 @@
-import os
-import shutil
 import PIL
 import numpy as np
 import random
@@ -12,8 +10,6 @@ from torch.optim import lr_scheduler
 
 import torch
 from torch import nn
-import torch.nn.functional as F
-# from torch.utils.tensorboard import SummaryWriter
 import visdom
 
 import statistics
@@ -21,7 +17,6 @@ from torchvision import transforms
 
 from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
 from ignite.metrics import Accuracy, Loss
-from ignite.contrib.metrics import AveragePrecision
 from ignite.handlers import Checkpoint, DiskSaver
 from resnet import ResNetASPP
 
@@ -41,57 +36,58 @@ def create_plot_window(vis, xlabel, ylabel, title, legend):
                     Y=np.array([[np.nan] * len(legend)]),
                     opts=dict(xlabel=xlabel, ylabel=ylabel, title=title, legend=legend))
 
+
 def compute_class_weights(dataset, c=1.02, num_classes=16):
     """
     Comnpute class weights like in ENet https://arxiv.org/abs/1606.02147
     """
     print('Computing class weights')
     weights = torch.zeros(num_classes)
-    for label in tqdm(dataset.labels):
+    for label in dataset.labels:
         weights[label] += 1
     weights /= len(dataset)
     weights = 1 / torch.log(c + weights)
+    # weights /= weights.min()
     print(f'Class weights:\n{weights}')
     return weights
 
 
 def main(args):
     fix_seeds()
-    # if os.path.exists('./logs'):
-    #     shutil.rmtree('./logs')
-    # os.mkdir('./logs')
-    # writer = SummaryWriter(log_dir='./logs')
     vis = visdom.Visdom()
     val_avg_loss_window = create_plot_window(vis, '#Epochs', 'Loss', 'Average Loss', legend=['Train', 'Val'])
     val_avg_accuracy_window = create_plot_window(vis, '#Epochs', 'Accuracy', 'Average Accuracy', legend=['Val'])
     size = (args.height, args.width)
+    interpolation = PIL.Image.BILINEAR
     train_transform = transforms.Compose([
         transforms.Resize(size),
-        # transforms.RandomResizedCrop(size=size, scale=(0.5, 1)),
+        # transforms.RandomResizedCrop(size=size, scale=(0.8, 1), interpolation=interpolation),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
         transforms.RandomHorizontalFlip(),
-        transforms.RandomAffine(10, translate=(0.1, 0.1), scale=(0.8, 1.2), resample=PIL.Image.BILINEAR),
+        # transforms.RandomVerticalFlip(),
+        transforms.RandomAffine(degrees=15, translate=(0.01, 0.01), scale=(0.75, 1.25), resample=interpolation),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     val_transform = transforms.Compose([
-        transforms.Resize(size),
+        transforms.Resize(size, interpolation=interpolation),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     train_dataset = TextDataset(args.data_path, 'train.txt', size=args.train_size, transform=train_transform)
     val_dataset = TextDataset(args.data_path, 'val.txt', size=args.val_size, transform=val_transform)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.workers, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.workers, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.workers, shuffle=True,
+                              drop_last=True, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.workers, shuffle=False,
+                            drop_last=False, pin_memory=True)
 
-    # model = models.resnet18(pretrained=True)
-    model = ResNetASPP(pretrained=True)
+    model = models.resnet152(pretrained=args.pretrained)
     # for param in model.parameters():
     #     param.requires_grad = False # freeze weights
-    # model.fc = nn.Sequential(
-    #     ASPP(512, 256, [6, 12, 18]),
-    #     nn.Linear(256, 16)
-    # )
+    # model.fc = nn.Linear(512, 16) # resnet 18,34
+    model.fc = nn.Linear(2048, 16)  # resnet 50+
 
+    # model = ResNetASPP(pretrained=True)
     # model = Model(16)
 
     device = 'cpu'
@@ -100,16 +96,15 @@ def main(args):
     print(device)
     
     # lr = 3e-3 / 10
-    lr = 1e-4
-    # criterion = nn.NLLLoss()
+    lr = 5e-4
+    # lr = 2e-3
     class_weights = compute_class_weights(train_dataset)
     criterion = nn.CrossEntropyLoss(class_weights.to(device))
-    # optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=1e-4, momentum=0.9)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr/10, weight_decay=1e-4, betas=(0.9, 0.999))
-    scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=lr, div_factor=10, steps_per_epoch=len(train_loader), epochs=args.epochs)
-    # scheduler = lr_scheduler.StepLR(optimizer, 5, 0.8)
-    poly_lr = lambda epoch: pow((1 - ((epoch - 1) / args.epochs)), 0.9)
-    # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=poly_lr)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4, nesterov=False)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4, betas=(0.9, 0.999))
+    # scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=lr, div_factor=10, steps_per_epoch=len(train_loader), epochs=args.epochs)
+    poly_lr = lambda epoch: pow((1 - (epoch / args.epochs)), 0.9)
+    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=poly_lr)
     trainer = create_supervised_trainer(model, optimizer, criterion, device=device)
     metrics = {
         'accuracy': Accuracy(),
@@ -117,13 +112,12 @@ def main(args):
     }
     evaluator = create_supervised_evaluator(model, metrics, device=device)
 
-    @trainer.on(Events.ITERATION_COMPLETED)
+    @trainer.on(Events.EPOCH_COMPLETED)
     def lr_step(engine):
         scheduler.step()
 
     global pbar, desc
     pbar,desc = None, None
-
 
     @trainer.on(Events.EPOCH_STARTED)
     def create_train_pbar(engine):
@@ -133,7 +127,6 @@ def main(args):
         desc = 'Train iteration - loss: {:.4f} - lr: {:.6f}'
         pbar = tqdm(initial=0, leave=False, total=len(train_loader), desc=desc.format(0, lr))
 
-
     @trainer.on(Events.EPOCH_COMPLETED)
     def create_val_pbar(engine):
         global desc, pbar
@@ -141,9 +134,6 @@ def main(args):
             pbar.close()
         desc = 'Validation iteration - loss: {:.4f}'
         pbar = tqdm(initial=0, leave=False, total=len(val_loader), desc=desc.format(0))
-
-    # desc_val = 'Validation iteration - loss: {:.4f}'
-    # pbar_val = tqdm(initial=0, leave=False, total=len(val_loader), desc=desc_val.format(0))
 
     log_interval = 1
     e = Events.ITERATION_COMPLETED(every=log_interval)
@@ -156,8 +146,6 @@ def main(args):
         train_losses.append(engine.state.output)
         pbar.desc = desc.format(engine.state.output, lr)
         pbar.update(log_interval)
-        # writer.add_scalar("training/loss", engine.state.output, engine.state.iteration)
-        # writer.add_scalar("lr", lr, engine.state.iteration)
 
     @evaluator.on(e)
     def log_validation_loss(engine):
@@ -165,22 +153,6 @@ def main(args):
         output = engine.state.output[0]
         pbar.desc = desc.format(criterion(output, label))
         pbar.update(log_interval)
-
-    # if args.resume_from is not None:
-    #     @trainer.on(Events.STARTED)
-    #     def _(engine):
-    #         pbar.n = engine.state.iteration
-
-    # @trainer.on(Events.EPOCH_COMPLETED(every=1))
-    # def log_train_results(engine):
-    #     evaluator.run(train_loader) # eval on train set to check for overfitting
-    #     metrics = evaluator.state.metrics
-    #     avg_accuracy = metrics['accuracy']
-    #     avg_nll = metrics['loss']
-    #     tqdm.write(
-    #         "Train Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}"
-    #         .format(engine.state.epoch, avg_accuracy, avg_nll))
-    #     pbar.n = pbar.last_print_n = 0
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_validation_results(engine):
@@ -192,12 +164,7 @@ def main(args):
         tqdm.write(
             "Validation Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}"
             .format(engine.state.epoch, avg_accuracy, avg_nll))
-        # pbar.n = pbar.last_print_n = 0
 
-        # writer.add_scalars("avg losses", {"train": statistics.mean(train_losses),
-        #                                   "valid": avg_nll}, engine.state.epoch)
-        # # writer.add_scalar("valdation/avg_loss", avg_nll, engine.state.epoch)
-        # writer.add_scalar("avg_accuracy", avg_accuracy, engine.state.epoch)
         vis.line(X=np.array([engine.state.epoch]), Y=np.array([avg_accuracy]),
                  win=val_avg_accuracy_window, update='append')
         vis.line(X=np.column_stack((np.array([engine.state.epoch]), np.array([engine.state.epoch]))),
@@ -224,19 +191,18 @@ def main(args):
         print(traceback.format_exc())
 
 
-
-
 if __name__=='__main__':
     parser = ArgumentParser()
     parser.add_argument('--data_path', type=str, default='./data', help="Dataset loaction")
-    parser.add_argument('--batch_size', type=int, default=64, help="Training and validation batch size")
-    parser.add_argument('--epochs', type=int, default=30, help="Number of epochs")
-    parser.add_argument('--workers', type=int, default=0, help="Number of workers for loading data")
+    parser.add_argument('--batch_size', type=int, default=6, help="Training and validation batch size")
+    parser.add_argument('--pretrained', action='store_true')
+    parser.add_argument('--epochs', type=int, default=10, help="Number of epochs")
+    parser.add_argument('--workers', type=int, default=0, help="Number of workers for loading data. Keep 0 on Windows.")
     parser.add_argument('--snapshot_dir', type=str, default='./snapshots')
     parser.add_argument('--resume_from', type=str, default=None) #'./snapshots/checkpoint_948.pth')
-    parser.add_argument('--train_size', type=int, default=1000)
-    parser.add_argument('--val_size', type=int, default=1000)
+    parser.add_argument('--train_size', type=int, default=4000)
+    parser.add_argument('--val_size', type=int, default=800)
     parser.add_argument('--width', type=int, default=256)
-    parser.add_argument('--height', type=int, default=256)
+    parser.add_argument('--height', type=int, default=512)
     parser.add_argument('--cuda', action="store_true")
     main(parser.parse_args())
